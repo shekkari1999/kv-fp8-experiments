@@ -1,53 +1,86 @@
-import time
 import json
+import time
+from pathlib import Path
+
 import requests
 
-from pathlib import Path
 
 repo_root = Path(__file__).resolve().parents[1]
 prompt_path = repo_root / "workloads/prompts/cold_4k.txt"
-prompt = prompt_path.read_text(encoding="utf-8")
 
-url = "http://127.0.0.1:8000/v1/completions"
+URL = "http://127.0.0.1:8000/v1/completions"
 
-payload = {
-     "model": "Qwen/Qwen3-1.7B",
-    "prompt": "The capital of France is",
-    "max_tokens": 16,
-    "temperature": 0,
-    "stream": True,
-}
 
-start_time = time.perf_counter()
-first_token_time = None
-chunks = []
-with requests.post(url, json=payload, stream=True, timeout=300) as response:
-    response.raise_for_status()
+def run_request():
+    prompt = prompt_path.read_text(encoding="utf-8")
 
-    for line in response.iter_lines(decode_unicode=True):
-        if not line or not line.startswith("data: "):
-            continue
+    payload = {
+        "model": "Qwen/Qwen3-1.7B",
+        "prompt": prompt,
+        "max_tokens": 128,
+        "temperature": 0,
+        "stream": True,
+        "stream_options": {
+            "include_usage": True,
+        },
+    }
 
-        data = line.removeprefix("data: ")
+    start_time = time.perf_counter()
+    first_token_time = None
+    output_tokens = None
+    chunks = []
 
-        if data == "[DONE]":
-            break
+    with requests.post(
+        URL,
+        json=payload,
+        stream=True,
+        timeout=300,
+    ) as response:
+        response.raise_for_status()
 
-        event = json.loads(data)
-        text = event["choices"][0]["text"]
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
 
-        if text:
-            if first_token_time is None:
-                first_token_time = time.perf_counter()
+            data = line.removeprefix("data: ")
 
-            chunks.append(text)
+            if data == "[DONE]":
+                break
 
-end_time = time.perf_counter()
+            event = json.loads(data)
 
-ttft = first_token_time - start_time
-e2e = end_time - start_time
-generated_text = "".join(chunks)
+            if event.get("usage"):
+                output_tokens = event["usage"]["completion_tokens"]
 
-print(f"TTFT: {ttft:.4f} seconds")
-print(f"E2E: {e2e:.4f} seconds")
-print(f"Text: {generated_text}")
+            if not event.get("choices"):
+                continue
+
+            text = event["choices"][0]["text"]
+
+            if text:
+                if first_token_time is None:
+                    first_token_time = time.perf_counter()
+
+                chunks.append(text)
+
+    end_time = time.perf_counter()
+
+    if first_token_time is None or output_tokens is None:
+        raise RuntimeError("The server returned incomplete timing information.")
+
+    return {
+        "ttft_s": first_token_time - start_time,
+        "tpot_s": (end_time - first_token_time) / (output_tokens - 1),
+        "e2e_s": end_time - start_time,
+        "output_tokens": output_tokens,
+        "text": "".join(chunks),
+    }
+
+
+if __name__ == "__main__":
+    result = run_request()
+
+    print(f"TTFT: {result['ttft_s']:.4f} seconds")
+    print(f"TPOT: {result['tpot_s']:.4f} seconds")
+    print(f"E2E: {result['e2e_s']:.4f} seconds")
+    print(f"Output tokens: {result['output_tokens']}")
