@@ -3,5 +3,6 @@ name = "kv-fp8-experiments"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "datasets>=5.0.1",
     "vllm==0.28.0",
 ]
